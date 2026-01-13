@@ -47,7 +47,7 @@ class PrefixCompleter:
         if not self.tokenizer.pad_token_id:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        self.llm = LLM(model=config.model_id)
+        self.llm = LLM(model=config.model_id, gpu_memory_utilization=0.8)
         self.sampling_params = SamplingParams(
             temperature=config.temperature,
             top_p=1.,

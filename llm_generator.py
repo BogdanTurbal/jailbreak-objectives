@@ -206,8 +206,10 @@ class DualLLMGenerator:
                     truncation=True,
                     add_special_tokens=False,
                 )
-                input_ids = inputs['input_ids']
-                attention_mask = inputs['attention_mask']
+                
+                # Move inputs to the same device as the model
+                input_ids = inputs['input_ids'].to(self.original_model.device)
+                attention_mask = inputs['attention_mask'].to(self.original_model.device)
 
                 # Validate input
                 self._validate_inputs(input_ids)
@@ -369,8 +371,10 @@ class DualLLMGenerator:
                     truncation=True,
                     add_special_tokens=False,
                 )
-                input_ids = inputs['input_ids']
-                attention_mask = inputs['attention_mask']
+                
+                # Move inputs to the same device as the model
+                input_ids = inputs['input_ids'].to(self.original_model.device)
+                attention_mask = inputs['attention_mask'].to(self.original_model.device)
 
                 # Validate input
                 self._validate_inputs(input_ids)
@@ -665,8 +669,10 @@ class SingleLLMGenerator:
                     truncation=True,
                     add_special_tokens=False,
                 )
-                input_ids = inputs['input_ids']
-                attention_mask = inputs['attention_mask']
+                
+                # Move inputs to the same device as the model
+                input_ids = inputs['input_ids'].to(self.model.device)
+                attention_mask = inputs['attention_mask'].to(self.model.device)
 
                 # Validate input
                 self._validate_inputs(input_ids)

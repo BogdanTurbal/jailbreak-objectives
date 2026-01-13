@@ -5,141 +5,113 @@
 # LICENSE file in the root directory of this source tree.
 
 import torch
-import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple
 import pandas as pd
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 import logging
-
+from dataclasses import dataclass
+from typing import List, Dict
 
 @dataclass
 class CECalculatorConfig:
-    """Configuration for cross-entropy calculation"""
     model_id: str
-    batch_size: int = 32
-    padding_side: Optional[str] = None  # If None, will be determined based on model
-    device_map: str = "auto"
-    torch_dtype: torch.dtype = torch.bfloat16
-    surrogate_attack_prompt: str = ""
-
-    def __post_init__(self):
-        if self.padding_side is None:
-            # Set default padding side based on model
-            if self.model_id in ['google/gemma-2-9b-it', 'meta-llama/Llama-2-7b-chat-hf']:
-                self.padding_side = 'right'
-            else:
-                self.padding_side = 'left'
-
+    batch_size: int
+    surrogate_attack_prompt: str
 
 class PrefixCECalculator:
-    """
-    Calculate cross-entropy loss for prefixes.
-
-    This class handles the computation of negative log-likelihood (cross-entropy loss)
-    for generated prefixes, using the victim language model.
-    """
-
     def __init__(self, config: CECalculatorConfig):
+        """
+        Initialize the Cross-Entropy Calculator.
+        """
         self.config = config
-        self.logger = logging.getLogger(__name__)
-        self._setup_model()
-
-    def _setup_model(self):
-        """Initialize model and tokenizer"""
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.config.model_id,
-            padding_side=self.config.padding_side
-        )
-        if not self.tokenizer.pad_token_id:
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        logging.info(f"Loading model: {config.model_id} for CE calculation")
+        
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
-
+            
+        # Load model
+        # using device_map="auto" to handle large models automatically
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.model_id,
-            torch_dtype=self.config.torch_dtype,
-            device_map=self.config.device_map
+            config.model_id,
+            device_map="auto", 
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            trust_remote_code=True
         )
-
-    def _clear_gpu_memory(self):
-        """Clear GPU memory and ensure synchronization"""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-        del self.model
-        del self.tokenizer
+        self.model.eval()
 
     def calculate_ce(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculate cross-entropy loss for all prefixes in the dataframe.
-
-        Args:
-            df: DataFrame with 'goal' and 'prefix' columns
-
-        Returns:
-            DataFrame with additional 'prefix_nll' column containing the loss values
+        Calculate Cross-Entropy (NLL) for the prefixes in the dataframe.
         """
-        self.logger.info(f"Calculating CE for {len(df)} prefixes")
+        logging.info(f"Calculating CE for {len(df)} prefixes")
+        
+        # Ensure we have the required columns
+        if 'goal' not in df.columns or 'prefix' not in df.columns:
+            raise ValueError("Dataframe must contain 'goal' and 'prefix' columns")
 
-        result_df = df.copy()
-        result_df['prefix_nll'] = float('inf')
-        sep = ' ' if self.config.padding_side == 'right' else ''
+        # Prepare texts
+        # We construct the input as: <goal> <prefix> <surrogate>
+        # The loss is usually calculated on the surrogate or the prefix depending on the strategy.
+        # Given the config, we append the surrogate if it exists.
+        texts = []
+        surrogate = self.config.surrogate_attack_prompt if self.config.surrogate_attack_prompt else ""
+        
+        for _, row in df.iterrows():
+            # Basic formatting
+            prompt = f"{row['goal']} {row['prefix']}"
+            if surrogate:
+                prompt += f" {surrogate}"
+            texts.append(prompt)
 
-        for i in tqdm(range(0, len(df), self.config.batch_size)):
-            batch = df.iloc[i:i + self.config.batch_size]
-            goals = batch['goal'].tolist()
-            prefixes = batch['prefix'].tolist()
+        all_losses = []
+        batch_size = self.config.batch_size
 
-            # Prepare inputs and get context lengths in one pass
-            context_lens = []
-            formatted_inputs = []
-            for goal, prefix in zip(goals, prefixes):
-                goal += self.config.surrogate_attack_prompt.format(prefix=prefix.lstrip())
-
-                chat = [{"role": "user", "content": goal}]
-                context = self.tokenizer.apply_chat_template(
-                    chat,
-                    tokenize=False,
-                    add_generation_prompt=True
+        with torch.no_grad():
+            for i in tqdm(range(0, len(texts), batch_size), desc="Computing NLL"):
+                batch_texts = texts[i:i + batch_size]
+                
+                # Tokenize
+                inputs = self.tokenizer(
+                    batch_texts, 
+                    return_tensors="pt", 
+                    padding=True, 
+                    truncation=True
                 )
-                context_id = self.tokenizer.encode(context, add_special_tokens=False)
-                context_lens.append(len(context_id))
-                formatted_inputs.append(context + sep + prefix.lstrip())
+                
+                # --- FIX: Move inputs to the same device as the model ---
+                # This handles the "Expected all tensors to be on the same device" error
+                inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+                
+                # Forward pass
+                outputs = self.model(**inputs, use_cache=False)
+                logits = outputs.logits
+                
+                # Calculate loss
+                # Shift logits and labels to align prediction with target
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = inputs["input_ids"][..., 1:].contiguous()
+                
+                # Calculate Cross Entropy per sample
+                loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
+                loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                
+                # Reshape back to [batch_size, seq_len]
+                loss = loss.view(shift_labels.size(0), shift_labels.size(1))
+                
+                # Average loss over non-padded tokens (perplexity/NLL score)
+                # We use attention_mask to ignore padding
+                mask = inputs["attention_mask"][..., 1:].contiguous()
+                
+                # Sum loss per sequence and divide by number of non-pad tokens
+                sequence_loss = (loss * mask).sum(dim=1) / mask.sum(dim=1)
+                
+                all_losses.extend(sequence_loss.float().cpu().numpy().tolist())
 
-            # Tokenize batch
-            inputs = self.tokenizer(
-                formatted_inputs,
-                padding="longest",
-                return_tensors="pt",
-                return_attention_mask=True,
-                add_special_tokens=False
-            )
-
-            # Calculate losses for the batch
-            with torch.no_grad():
-                # Do not use cache cause otherwise gemma-2 messes up the devices
-                logits = self.model(**inputs, use_cache=False).logits
-
-            # Calculate loss for each sequence in the batch
-            losses = []
-            for j in range(len(logits)):
-                if self.config.padding_side == 'left':
-                    pad_lens = (inputs['attention_mask'] == 0).sum(1)
-                    target_logits = logits[j, pad_lens[j] + context_lens[j] - 1: -1, :]
-                    target_ids = inputs.input_ids[j,
-                                 pad_lens[j] + context_lens[j]:]  # Target IDs for the first i tokens
-                else:
-                    input_lens = (inputs['attention_mask'] == 1).sum(1)
-                    target_logits = logits[j, context_lens[j] - 1: input_lens[j] - 1, :]
-                    target_ids = inputs.input_ids[j, context_lens[j]: input_lens[j]]
-                loss = F.cross_entropy(target_logits, target_ids, reduction='sum')
-                losses.append(loss.item())
-
-            # Update DataFrame with calculated losses
-            result_df.iloc[i:i + len(batch), result_df.columns.get_loc('prefix_nll')] = losses
-
-        return result_df
-
-    def __del__(self):
-        """Cleanup resources when the calculator is destroyed."""
-        self._clear_gpu_memory()
+        # Add results to dataframe
+        df['prefix_nll'] = all_losses
+        return df

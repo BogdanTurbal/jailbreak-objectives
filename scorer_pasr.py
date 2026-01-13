@@ -142,6 +142,7 @@ Based on these criteria, please provide your classification. You should first br
                 model=self.config.model_id,
                 tensor_parallel_size=self.config.tensor_parallel_size,
                 max_model_len=self.config.max_model_len,
+                gpu_memory_utilization=0.8,
                 dtype='bfloat16',
                 quantization='fp8',
             )
@@ -221,6 +222,7 @@ Answer with either 'safe' or 'unsafe' and nothing else (in particular, never sta
             model=self.config.model_id,
             tensor_parallel_size=self.config.tensor_parallel_size,
             max_model_len=self.config.max_model_len,
+            gpu_memory_utilization=0.8,
             dtype='bfloat16',
             quantization='fp8',
         )
@@ -308,6 +310,7 @@ Answer: [/INST]"""
         llm = LLM(
             model=cls_path,
             dtype='bfloat16',
+            gpu_memory_utilization=0.8,
             tensor_parallel_size=self.config.tensor_parallel_size,
             max_model_len=self.config.max_model_len,
         )
