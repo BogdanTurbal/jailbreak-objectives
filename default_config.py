@@ -32,11 +32,11 @@ class PipelineConfig:
     # Uncensored models for generating candidate prefixes.
     # For the given victim LLM, we iterate through all uncensored LLMs listed here
     uncensored_models: Tuple[str, ...] = (
-        "TheDrummer/Tiger-Gemma-9B-v1",
+        # "TheDrummer/Tiger-Gemma-9B-v1",
         "Orenguteng/Llama-3-8B-Lexi-Uncensored",
-        "Orenguteng/Llama-3.1-8B-Lexi-Uncensored",
-        "georgesung/llama2_7b_chat_uncensored",
-        "Tap-M/Luna-AI-Llama2-Uncensored"
+        # "Orenguteng/Llama-3.1-8B-Lexi-Uncensored",
+        # "georgesung/llama2_7b_chat_uncensored",
+        # "Tap-M/Luna-AI-Llama2-Uncensored"
     )
     # In generating prefixes candidates using uncensored models, prefill the model's response with meta prefixes
     meta_prefixes: Tuple[str, ...] = ("Here", "To", "Sure", "")

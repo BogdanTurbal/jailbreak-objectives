@@ -1,4 +1,4 @@
-transformers==4.46.3
+transformers
 datasets
 git+https://github.com/dsbowen/strong_reject.git@main
 ml_collections
